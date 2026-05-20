@@ -23,6 +23,12 @@
 #ifndef TargetProfileDir
   #define TargetProfileDir "target\release-lto-debug_assertions"
 #endif
+#ifndef InstallerCompression
+  #define InstallerCompression "lzma"
+#endif
+#ifndef InstallerSolidCompression
+  #define InstallerSolidCompression "yes"
+#endif
 #define AssetsDir "..\..\app\assets\windows"
 
 // The mutex name must match what the Rust app creates in single_instance_manager.rs:
@@ -58,8 +64,8 @@ PrivilegesRequired=lowest
 ; Allow the user to choose administrative install mode (install for all users).
 PrivilegesRequiredOverridesAllowed=dialog
 OutputBaseFilename={#OutputName}
-Compression=lzma
-SolidCompression=yes
+Compression={#InstallerCompression}
+SolidCompression={#InstallerSolidCompression}
 WizardStyle=modern
 WizardSmallImageFile="installer-images\warp-logo.bmp"
 WizardImageFile="installer-images\warp-banner.bmp"

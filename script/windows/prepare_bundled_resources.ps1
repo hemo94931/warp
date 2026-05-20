@@ -43,7 +43,15 @@ Param(
     [String]$CargoFeatures = '',
 
     [Parameter(Mandatory = $false)]
-    [String]$CargoTarget = ''
+    [String]$CargoTarget = '',
+
+    [Parameter(Mandatory = $false)]
+    [Alias('skip-third-party-licenses')]
+    [Switch]$SkipThirdPartyLicenses = $False,
+
+    [Parameter(Mandatory = $false)]
+    [Alias('skip-settings-schema')]
+    [Switch]$SkipSettingsSchema = $False
 )
 
 $ErrorActionPreference = 'Stop'
@@ -159,29 +167,39 @@ $AdditionalLicenses += @(
 )
 
 $LicensesOutput = Join-Path $DestinationDir 'THIRD_PARTY_LICENSES.txt'
-Write-Output "Generating third-party licenses at $LicensesOutput"
-cargo about generate --workspace --manifest-path "$RepoRoot\Cargo.toml" -c "$RepoRoot\about.toml" -o "$LicensesOutput" "$RepoRoot\about.hbs"
-if (-Not $?) {
-    Write-Error 'Failed to generate third-party licenses'
-    exit 1
-}
-
-# Append additional (non-Cargo) third-party licenses.
-foreach ($entry in $AdditionalLicenses) {
-    $LicenseFile = Join-Path $RepoRoot $entry.Path
-    if (-Not (Test-Path $LicenseFile)) {
-        Write-Error "License file not found: $LicenseFile"
+$ShouldSkipThirdPartyLicenses = $SkipThirdPartyLicenses -or ($env:SKIP_THIRD_PARTY_LICENSES -eq '1')
+if ($ShouldSkipThirdPartyLicenses) {
+    if (Test-Path $LicensesOutput) {
+        Write-Output "Reusing existing third-party licenses at $LicensesOutput"
+    } else {
+        Write-Warning "Skipping third-party license generation; no existing file at $LicensesOutput"
+    }
+} else {
+    Write-Output "Generating third-party licenses at $LicensesOutput"
+    cargo about generate --workspace --manifest-path "$RepoRoot\Cargo.toml" -c "$RepoRoot\about.toml" -o "$LicensesOutput" "$RepoRoot\about.hbs"
+    if (-Not $?) {
+        Write-Error 'Failed to generate third-party licenses'
         exit 1
     }
-    Add-Content -Path $LicensesOutput -Value ''
-    Add-Content -Path $LicensesOutput -Value "$($entry.Name) ($($entry.License))"
-    Add-Content -Path $LicensesOutput -Value ('-' * 80)
-    Get-Content -Path $LicenseFile | Add-Content -Path $LicensesOutput
-    Add-Content -Path $LicensesOutput -Value ''
+
+    # Append additional (non-Cargo) third-party licenses.
+    foreach ($entry in $AdditionalLicenses) {
+        $LicenseFile = Join-Path $RepoRoot $entry.Path
+        if (-Not (Test-Path $LicenseFile)) {
+            Write-Error "License file not found: $LicenseFile"
+            exit 1
+        }
+        Add-Content -Path $LicensesOutput -Value ''
+        Add-Content -Path $LicensesOutput -Value "$($entry.Name) ($($entry.License))"
+        Add-Content -Path $LicensesOutput -Value ('-' * 80)
+        Get-Content -Path $LicenseFile | Add-Content -Path $LicensesOutput
+        Add-Content -Path $LicensesOutput -Value ''
+    }
 }
 
 # Generate settings JSON schema unless explicitly skipped.
-if ($env:SKIP_SETTINGS_SCHEMA -ne '1') {
+$ShouldSkipSettingsSchema = $SkipSettingsSchema -or ($env:SKIP_SETTINGS_SCHEMA -eq '1')
+if (-Not $ShouldSkipSettingsSchema) {
     $SchemaOutput = Join-Path $DestinationDir 'settings_schema.json'
     Write-Output "Generating settings schema at $SchemaOutput"
 
@@ -211,6 +229,10 @@ if ($env:SKIP_SETTINGS_SCHEMA -ne '1') {
         Write-Error 'Failed to generate settings schema'
         exit 1
     }
+} elseif (Test-Path (Join-Path $DestinationDir 'settings_schema.json')) {
+    Write-Output "Reusing existing settings schema at $(Join-Path $DestinationDir 'settings_schema.json')"
+} else {
+    Write-Warning "Skipping settings schema generation; no existing file at $(Join-Path $DestinationDir 'settings_schema.json')"
 }
 
 Write-Output "Successfully prepared bundled resources in $DestinationDir"

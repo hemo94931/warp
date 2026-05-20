@@ -9,6 +9,9 @@ Param (
     [Alias('check-only')]
     [Switch]$CHECK_ONLY,
 
+    [Alias('fast-local')]
+    [Switch]$FAST_LOCAL = $False,
+
     [ValidateSet('local', 'dev', 'preview', 'stable', 'oss')]
     [String]$CHANNEL = 'dev',
 
@@ -63,8 +66,31 @@ $WORKSPACE_ROOT_DIR = $(Get-Location).Path
 $CARGO_TARGET_DIR = $WORKSPACE_ROOT_DIR + '\target'
 $WINDOWS_INSTALLER_DIR = $WORKSPACE_ROOT_DIR + '\script\windows'
 
+function Invoke-CargoWithBundleEnv {
+    Param([String[]]$CargoArgs)
+
+    $previousCargoIncremental = $env:CARGO_INCREMENTAL
+    try {
+        if ($FAST_LOCAL) {
+            $env:CARGO_INCREMENTAL = '1'
+        }
+        & cargo @CargoArgs
+        $script:LAST_CARGO_COMMAND_SUCCEEDED = $?
+    } finally {
+        if ($FAST_LOCAL) {
+            if ($null -eq $previousCargoIncremental) {
+                Remove-Item Env:CARGO_INCREMENTAL -ErrorAction SilentlyContinue
+            } else {
+                $env:CARGO_INCREMENTAL = $previousCargoIncremental
+            }
+        }
+    }
+}
+
 if ($DEBUG_BUILD) {
     $CARGO_PROFILE = 'dev'
+} elseif ($FAST_LOCAL) {
+    $CARGO_PROFILE = 'release'
 } elseif (("$CHANNEL" -eq 'local') -or ("$CHANNEL" -eq 'dev')) {
     # For dev bundles, we want to enable debug assertions to
     # catch violations that would otherwise silently pass in
@@ -134,6 +160,10 @@ $INSTALLER_NAME = "$($APP_NAME)$($FILE_ENDING)"
 $INSTALLER_PATH = "$($INSTALLER_OUTPUT_DIR)\$($INSTALLER_NAME).exe"
 $PDB_PATH = "$CARGO_TARGET_OUTPUT_DIR\$WARP_BIN.pdb"
 
+if ($FAST_LOCAL) {
+    Write-Output 'Fast local bundle mode enabled: using non-LTO release build, incremental cargo, cached local metadata, and faster installer compression.'
+}
+
 # The CARGO_FULL_PROFILE environment variable is read by the `cargo` build
 # script (`app/build.rs`) to determine where to place `conpty.dll`.
 if ($DEBUG_BUILD) {
@@ -146,8 +176,8 @@ if ($DEBUG_BUILD) {
 # then exit.  We use this script to invoke `cargo check` to ensure that we are
 # using the same feature flags and profile that we would be using in production.
 if ($CHECK_ONLY) {
-    cargo check -p warp --profile "$CARGO_PROFILE" --bin "$WARP_BIN" --features "$FEATURES" --target $PLATFORM_TARGET
-    if (-Not $?) {
+    Invoke-CargoWithBundleEnv @('check', '-p', 'warp', '--profile', "$CARGO_PROFILE", '--bin', "$WARP_BIN", '--features', "$FEATURES", '--target', $PLATFORM_TARGET)
+    if (-Not $script:LAST_CARGO_COMMAND_SUCCEEDED) {
         Write-Error "Failed to verify Warp $WARP_BIN compilation with profile $CARGO_PROFILE"
         exit 1
     }
@@ -158,8 +188,8 @@ if (-Not $SKIP_BUILD_BINARY) {
     Write-Output "Building Warp for channel $CHANNEL and bundle id $BUNDLE_ID"
     $env:CARGO_BIN_NAME = $CHANNEL
     $env:WARP_APP_NAME = $APP_NAME
-    cargo build -p warp --profile "$CARGO_PROFILE" --bin "$WARP_BIN" --features "$FEATURES" --target $PLATFORM_TARGET
-    if (-Not $?) {
+    Invoke-CargoWithBundleEnv @('build', '-p', 'warp', '--profile', "$CARGO_PROFILE", '--bin', "$WARP_BIN", '--features', "$FEATURES", '--target', $PLATFORM_TARGET)
+    if (-Not $script:LAST_CARGO_COMMAND_SUCCEEDED) {
         Write-Error "Failed to build Warp $WARP_BIN binary with profile $CARGO_PROFILE"
         exit 1
     }
@@ -205,7 +235,22 @@ if ($PLATFORM_TARGET -eq $HOST_TARGET) {
 } else {
     $SCHEMA_CARGO_TARGET = ''
 }
-& "$WINDOWS_INSTALLER_DIR\prepare_bundled_resources.ps1" -DestinationDir "$BUNDLED_RESOURCES_DIR" -Channel "$CHANNEL" -CargoProfile "$CARGO_PROFILE" -CargoFeatures "$FEATURES" -CargoTarget "$SCHEMA_CARGO_TARGET"
+$PREPARE_BUNDLED_RESOURCES_ARGS = @(
+    '-DestinationDir', "$BUNDLED_RESOURCES_DIR",
+    '-Channel', "$CHANNEL",
+    '-CargoProfile', "$CARGO_PROFILE",
+    '-CargoFeatures', "$FEATURES",
+    '-CargoTarget', "$SCHEMA_CARGO_TARGET"
+)
+if ($FAST_LOCAL) {
+    $PREPARE_BUNDLED_RESOURCES_ARGS += @('-SkipThirdPartyLicenses')
+    if (Test-Path (Join-Path $BUNDLED_RESOURCES_DIR 'settings_schema.json')) {
+        $PREPARE_BUNDLED_RESOURCES_ARGS += @('-SkipSettingsSchema')
+    } else {
+        Write-Output 'Fast local bundle mode: no cached settings schema found, generating it once.'
+    }
+}
+& "$WINDOWS_INSTALLER_DIR\prepare_bundled_resources.ps1" @PREPARE_BUNDLED_RESOURCES_ARGS
 if (-Not $?) {
     Write-Error "Failed to prepare bundled resources"
     exit 1
@@ -223,6 +268,10 @@ $ISCC_ARGS = @(
     "/DOutputName=$INSTALLER_NAME",
     "/DAppUserModelId=$AUMID"
 )
+if ($FAST_LOCAL) {
+    $ISCC_ARGS += '/DInstallerCompression=zip'
+    $ISCC_ARGS += '/DInstallerSolidCompression=no'
+}
 # Also accept the sign tool command via env var
 if (-not $SIGN_TOOL_CMD -and $env:SIGN_TOOL_CMD) {
     $SIGN_TOOL_CMD = $env:SIGN_TOOL_CMD
